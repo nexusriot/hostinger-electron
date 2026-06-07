@@ -1,0 +1,65 @@
+{
+  "name": "hostinger-electron",
+  "version": "0.1.0",
+  "description": "Desktop app for managing Hostinger VPS \u2014 virtual machines, snapshots, backups, metrics, firewalls, public keys, Docker projects and billing. Electron port of hostinger-tui.",
+  "author": "nexusriot",
+  "license": "MIT",
+  "homepage": "https://github.com/nexusriot/hostinger-tui",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nexusriot/hostinger-tui.git"
+  },
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "dist:deb": "electron-builder --linux deb",
+    "dist:deb:amd64": "electron-builder --linux deb --x64",
+    "dist:deb:arm64": "electron-builder --linux deb --arm64",
+    "dist:deb:armhf": "electron-builder --linux deb --armv7l",
+    "dist:all": "electron-builder --linux deb AppImage --x64 --arm64 --armv7l",
+    "pack": "electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "io.github.nexusriot.hostinger-electron",
+    "productName": "Hostinger VPS",
+    "copyright": "Copyright \u00a9 2026 nexusriot",
+    "files": [
+      "src/**/*",
+      "renderer/**/*",
+      "!**/*.md"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "linux": {
+      "category": "Network",
+      "synopsis": "Hostinger VPS manager",
+      "description": "Desktop client for managing Hostinger VPS: virtual machines (power/recovery/recreate/hostname/PTR/nameservers), snapshots, backups, metrics, firewalls, public keys, Docker projects and billing.",
+      "maintainer": "nexusriot <noreply@example.com>",
+      "target": [
+        "deb",
+        "AppImage"
+      ],
+      "icon": "build/icons"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0"
+      ]
+    }
+  }
+}

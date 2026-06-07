@@ -1,0 +1,49 @@
+# ---- dependencies ----
+node_modules/
+.npm/
+.pnp
+.pnp.js
+
+# ---- build output (electron-builder) ----
+# NOTE: build/ is intentionally NOT ignored — it holds source icons
+# (build/icon.png, build/icons/) used as electron-builder buildResources.
+# Only dist/ is generated output.
+dist/
+out/
+release/
+*.deb
+*.AppImage
+*.snap
+*.rpm
+*.exe
+*.dmg
+*.zip
+*.tar.gz
+
+# ---- local runtime config (may contain API tokens / secrets) ----
+config.json
+config.local.json
+.env
+.env.*
+
+# ---- logs ----
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- caches ----
+.cache/
+.electron-builder-cache/
+.eslintcache
+
+# ---- editors / OS ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
