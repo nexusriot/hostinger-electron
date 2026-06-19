@@ -58,7 +58,7 @@ class HostingerClient {
   }
 
   // ===== Virtual machines =====
-  async listVMs() { return extractItems(await this._do('GET', '/api/vps/v1/virtual-machines')).map(decodeVM); }
+  async listVMs() { return (await this._listPaged('/api/vps/v1/virtual-machines')).map(decodeVM); }
   async getVM(id) { return decodeSingle(await this._do('GET', '/api/vps/v1/virtual-machines/' + id), decodeVM); }
   async startVM(id) { return decodeAction(await this._do('POST', `/api/vps/v1/virtual-machines/${id}/start`)); }
   async stopVM(id) { return decodeAction(await this._do('POST', `/api/vps/v1/virtual-machines/${id}/stop`)); }
@@ -80,6 +80,16 @@ class HostingerClient {
     if (ns3) body.ns3 = ns3;
     return decodeAction(await this._do('PUT', `/api/vps/v1/virtual-machines/${id}/nameservers`, body));
   }
+  setPanelPassword(id, password) { return this._do('PUT', `/api/vps/v1/virtual-machines/${id}/panel-password`, { password }); }
+  // purchaseVM SPENDS REAL MONEY. setup = {templateID, dataCenterID, postInstallScriptID?, password?, hostname?, installMonarx?, enableBackups?, ns1?, ns2?}
+  async purchaseVM(itemID, paymentMethodID, setup) {
+    const body = { item_id: itemID, setup: vmSetupBody(setup) };
+    if (paymentMethodID) body.payment_method_id = Number(paymentMethodID);
+    const r = await this._do('POST', '/api/vps/v1/virtual-machines', body);
+    return isObj(r) && isObj(r.data) ? r.data : asObj(r);
+  }
+  // setupVM provisions an already-purchased (unconfigured) VM.
+  async setupVM(id, setup) { return decodeAction(await this._do('POST', `/api/vps/v1/virtual-machines/${id}/setup`, vmSetupBody(setup))); }
 
   // snapshot (singular, one per VM) — returns null if none (404)
   async getSnapshot(vmID) {
@@ -106,24 +116,33 @@ class HostingerClient {
 
   // actions
   async getAction(vmID, actionID) { return decodeAction(await this._do('GET', `/api/vps/v1/virtual-machines/${vmID}/actions/${actionID}`)); }
-  async listActions(vmID) { return extractItems(await this._do('GET', `/api/vps/v1/virtual-machines/${vmID}/actions`)).map(decodeActionRecord); }
+  async listActions(vmID) { return (await this._listPaged(`/api/vps/v1/virtual-machines/${vmID}/actions`)).map(decodeActionRecord); }
 
   // ===== Firewalls =====
-  async listFirewalls() { return extractItems(await this._do('GET', '/api/vps/v1/firewall')).map(decodeFirewallGroup); }
+  async listFirewalls() { return (await this._listPaged('/api/vps/v1/firewall')).map(decodeFirewallGroup); }
   async getFirewall(id) { return decodeSingle(await this._do('GET', `/api/vps/v1/firewall/${id}`), decodeFirewallGroup); }
   async createFirewall(name) { return decodeSingle(await this._do('POST', '/api/vps/v1/firewall', { name }), decodeFirewallGroup); }
   deleteFirewall(id) { return this._do('DELETE', `/api/vps/v1/firewall/${id}`); }
   async attachFirewall(firewallID, vmID) { return decodeAction(await this._do('POST', `/api/vps/v1/firewall/${firewallID}/activate/${vmID}`)); }
   async detachFirewall(firewallID, vmID) { return decodeAction(await this._do('POST', `/api/vps/v1/firewall/${firewallID}/deactivate/${vmID}`)); }
   async createFirewallRule(firewallID, protocol, port, source, sourceDetail) {
+    [protocol, source] = normalizeFirewallRule(protocol, source);
     const body = { protocol, port, source };
     if (sourceDetail) body.source_detail = sourceDetail;
     return decodeSingle(await this._do('POST', `/api/vps/v1/firewall/${firewallID}/rules`, body), decodeFirewallRule);
   }
+  async updateFirewallRule(firewallID, ruleID, protocol, port, source, sourceDetail) {
+    [protocol, source] = normalizeFirewallRule(protocol, source);
+    const body = { protocol, port, source };
+    if (sourceDetail) body.source_detail = sourceDetail;
+    return decodeSingle(await this._do('PUT', `/api/vps/v1/firewall/${firewallID}/rules/${ruleID}`, body), decodeFirewallRule);
+  }
   deleteFirewallRule(firewallID, ruleID) { return this._do('DELETE', `/api/vps/v1/firewall/${firewallID}/rules/${ruleID}`); }
+  // syncFirewall re-pushes a group (is_synced=false) to a VM's live firewall.
+  async syncFirewall(firewallID, vmID) { return decodeAction(await this._do('POST', `/api/vps/v1/firewall/${firewallID}/sync/${vmID}`)); }
 
   // ===== Public keys =====
-  async listPublicKeys() { return extractItems(await this._do('GET', '/api/vps/v1/public-keys')).map(decodePublicKey); }
+  async listPublicKeys() { return (await this._listPaged('/api/vps/v1/public-keys')).map(decodePublicKey); }
   async createPublicKey(name, key) { return decodeSingle(await this._do('POST', '/api/vps/v1/public-keys', { name, key }), decodePublicKey); }
   deletePublicKey(id) { return this._do('DELETE', `/api/vps/v1/public-keys/${id}`); }
   async attachPublicKeys(vmID, ids) { return decodeAction(await this._do('POST', `/api/vps/v1/public-keys/attach/${vmID}`, { ids })); }
@@ -139,22 +158,142 @@ class HostingerClient {
   restartDockerProject(vmID, name) { return this._do('POST', `/api/vps/v1/virtual-machines/${vmID}/docker/${name}/restart`); }
   updateDockerProject(vmID, name) { return this._do('POST', `/api/vps/v1/virtual-machines/${vmID}/docker/${name}/update`); }
   downDockerProject(vmID, name) { return this._do('DELETE', `/api/vps/v1/virtual-machines/${vmID}/docker/${name}/down`); }
+  // createDockerProject — content is the compose YAML; environment is optional.
+  async createDockerProject(vmID, name, content, environment) {
+    const body = { project_name: name, content };
+    if (environment) body.environment = environment;
+    return decodeAction(await this._do('POST', `/api/vps/v1/virtual-machines/${vmID}/docker`, body));
+  }
+
+  // ===== Post-install scripts =====
+  async listPostInstallScripts() { return (await this._listPaged('/api/vps/v1/post-install-scripts')).map(decodePostInstallScript); }
+  async getPostInstallScript(id) { return decodeSingle(await this._do('GET', `/api/vps/v1/post-install-scripts/${id}`), decodePostInstallScript); }
+  async createPostInstallScript(name, content) { return decodeSingle(await this._do('POST', '/api/vps/v1/post-install-scripts', { name, content }), decodePostInstallScript); }
+  async updatePostInstallScript(id, name, content) { return decodeSingle(await this._do('PUT', `/api/vps/v1/post-install-scripts/${id}`, { name, content }), decodePostInstallScript); }
+  deletePostInstallScript(id) { return this._do('DELETE', `/api/vps/v1/post-install-scripts/${id}`); }
+
+  // ===== Malware scanner (Monarx) =====
+  // getMonarx returns {installed:false} on 404 (agent not installed).
+  async getMonarx(vmID) {
+    let resp;
+    try { resp = await this._do('GET', `/api/vps/v1/virtual-machines/${vmID}/monarx`); }
+    catch (e) { if (e.status === 404) return { installed: false, raw: {} }; throw e; }
+    const m = isObj(resp) && isObj(resp.data) ? resp.data : asObj(resp);
+    return {
+      installed: true,
+      records: mapInt(m, 'records'), malicious: mapInt(m, 'malicious'), compromised: mapInt(m, 'compromised'),
+      scannedFiles: mapInt(m, 'scanned_files'),
+      scanStartedAt: mapTimeStr(m, 'scan_started_at'), scanEndedAt: mapTimeStr(m, 'scan_ended_at'), raw: m,
+    };
+  }
+  async installMonarx(vmID) { return decodeAction(await this._do('POST', `/api/vps/v1/virtual-machines/${vmID}/monarx`)); }
+  async uninstallMonarx(vmID) { return decodeAction(await this._do('DELETE', `/api/vps/v1/virtual-machines/${vmID}/monarx`)); }
 
   // ===== Billing =====
-  async listSubscriptions() { return extractItems(await this._do('GET', '/api/billing/v1/subscriptions')).map(decodeSubscription); }
+  async listSubscriptions() { return (await this._listPaged('/api/billing/v1/subscriptions')).map(decodeSubscription); }
   enableAutoRenewal(subID) { return this._do('PATCH', `/api/billing/v1/subscriptions/${subID}/auto-renewal/enable`); }
   disableAutoRenewal(subID) { return this._do('DELETE', `/api/billing/v1/subscriptions/${subID}/auto-renewal/disable`); }
-  async listPaymentMethods() { return extractItems(await this._do('GET', '/api/billing/v1/payment-methods')).map(decodePaymentMethod); }
+  async listPaymentMethods() { return (await this._listPaged('/api/billing/v1/payment-methods')).map(decodePaymentMethod); }
+  setDefaultPaymentMethod(id) { return this._do('POST', `/api/billing/v1/payment-methods/${id}`); }
+  deletePaymentMethod(id) { return this._do('DELETE', `/api/billing/v1/payment-methods/${id}`); }
+  async listCatalog() { return (await this._listPaged('/api/billing/v1/catalog')).map(decodeCatalogItem); }
+
+  // ===== DNS =====
+  async getDNSRecords(domain) { return extractItems(await this._do('GET', `/api/dns/v1/zones/${domain}`)).map(decodeDNSRecord); }
+  // updateDNSRecords: zone = [{name,type,ttl,records:[{content,isDisabled}]}]; overwrite replaces the whole zone.
+  updateDNSRecords(domain, zone, overwrite) { return this._do('PUT', `/api/dns/v1/zones/${domain}`, { overwrite: !!overwrite, zone: encodeZone(zone) }); }
+  // deleteDNSRecords: filters = [{name,type}]
+  deleteDNSRecords(domain, filters) { return this._do('DELETE', `/api/dns/v1/zones/${domain}`, { filters: (filters || []).map((r) => ({ name: r.name, type: r.type })) }); }
+  resetDNS(domain) { return this._do('POST', `/api/dns/v1/zones/${domain}/reset`); }
+  validateDNSRecords(domain, zone, overwrite) { return this._do('POST', `/api/dns/v1/zones/${domain}/validate`, { overwrite: !!overwrite, zone: encodeZone(zone) }); }
+  async listDNSSnapshots(domain) { return extractItems(await this._do('GET', `/api/dns/v1/snapshots/${domain}`)).map(decodeDNSSnapshot); }
+  restoreDNSSnapshot(domain, snapshotID) { return this._do('POST', `/api/dns/v1/snapshots/${domain}/${snapshotID}/restore`); }
+
+  // ===== Domains =====
+  async listDomains() { return (await this._listPaged('/api/domains/v1/portfolio')).map(decodeDomain); }
+  async getDomain(domain) { return decodeDomainDetail(await this._do('GET', `/api/domains/v1/portfolio/${domain}`)); }
+  enableDomainLock(domain) { return this._do('PUT', `/api/domains/v1/portfolio/${domain}/domain-lock`); }
+  disableDomainLock(domain) { return this._do('DELETE', `/api/domains/v1/portfolio/${domain}/domain-lock`); }
+  enableDomainPrivacy(domain) { return this._do('PUT', `/api/domains/v1/portfolio/${domain}/privacy-protection`); }
+  disableDomainPrivacy(domain) { return this._do('DELETE', `/api/domains/v1/portfolio/${domain}/privacy-protection`); }
+  updateDomainNameservers(domain, ns1, ns2, ns3, ns4) {
+    const body = { ns1, ns2 };
+    if (ns3) body.ns3 = ns3;
+    if (ns4) body.ns4 = ns4;
+    return this._do('PUT', `/api/domains/v1/portfolio/${domain}/nameservers`, body);
+  }
+  async checkDomainAvailability(name, tlds, withAlternatives) {
+    const body = { domain: name, tlds: tlds || [], with_alternatives: !!withAlternatives };
+    return extractItems(await this._do('POST', '/api/domains/v1/availability', body)).map((it) => ({
+      domain: mapStr(it, 'domain'), isAvailable: mapBool(it, 'is_available'),
+      isAlternative: mapBool(it, 'is_alternative'), restriction: mapStr(it, 'restriction'),
+    }));
+  }
 
   // ===== Reference =====
   async listTemplates() { return extractItems(await this._do('GET', '/api/vps/v1/templates')).map((it) => ({ id: mapInt(it, 'id'), name: mapStr(it, 'name'), description: mapStr(it, 'description'), documentation: mapStr(it, 'documentation'), raw: it })); }
+  async getTemplate(id) { const m = unwrapObj(await this._do('GET', `/api/vps/v1/templates/${id}`)); return { id: mapInt(m, 'id'), name: mapStr(m, 'name'), description: mapStr(m, 'description'), documentation: mapStr(m, 'documentation'), raw: m }; }
   async listDataCenters() { return extractItems(await this._do('GET', '/api/vps/v1/data-centers')).map((it) => ({ id: mapInt(it, 'id'), name: mapStr(it, 'name'), city: mapStr(it, 'city'), location: mapStr(it, 'location'), continent: mapStr(it, 'continent'), raw: it })); }
+
+  // listPaged walks ?page=N until a short page (50/page). Capped at 100 pages.
+  async _listPaged(path) {
+    const pageSize = 50, maxPages = 100;
+    let all = [];
+    for (let page = 1; page <= maxPages; page++) {
+      const sep = path.includes('?') ? '&' : '?';
+      const items = extractItems(await this._do('GET', `${path}${sep}page=${page}`));
+      all = all.concat(items);
+      if (items.length < pageSize) break;
+    }
+    return all;
+  }
 }
 
 // ============================ helpers ============================
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
 const asObj = (v) => (isObj(v) ? v : {});
+const unwrapObj = (resp) => (isObj(resp) && isObj(resp.data) ? resp.data : asObj(resp));
+
+// normalizeFirewallRule maps loose protocol/source values onto the enums the
+// API requires: protocol → TCP|UDP|ICMP|GRE|ESP|AH|ICMPv6|SSH|HTTP|HTTPS|MySQL|
+// PostgreSQL|any ; source → any|custom. Returns [protocol, source].
+function normalizeFirewallRule(protocol, source) {
+  const p = String(protocol || '').trim().toLowerCase();
+  const protoMap = {
+    tcp: 'TCP', udp: 'UDP', icmp: 'ICMP', icmpv6: 'ICMPv6', gre: 'GRE', esp: 'ESP',
+    ah: 'AH', ssh: 'SSH', http: 'HTTP', https: 'HTTPS', mysql: 'MySQL',
+    postgresql: 'PostgreSQL', postgres: 'PostgreSQL', any: 'any', '': 'any',
+  };
+  const proto = protoMap[p] || String(protocol || '').toUpperCase();
+  const s = String(source || '').trim().toLowerCase();
+  const src = (s === 'any' || s === 'anywhere' || s === '') ? 'any' : 'custom';
+  return [proto, src];
+}
+
+// vmSetupBody builds the {template_id, data_center_id, ...} setup object shared
+// by purchaseVM and setupVM.
+function vmSetupBody(s) {
+  s = s || {};
+  const b = { template_id: Number(s.templateID || 0), data_center_id: Number(s.dataCenterID || 0) };
+  if (s.postInstallScriptID) b.post_install_script_id = Number(s.postInstallScriptID);
+  if (s.password) b.password = s.password;
+  if (s.hostname) b.hostname = s.hostname;
+  if (s.installMonarx) b.install_monarx = true;
+  if (s.enableBackups) b.enable_backups = true;
+  if (s.ns1) b.ns1 = s.ns1;
+  if (s.ns2) b.ns2 = s.ns2;
+  return b;
+}
+
+// encodeZone turns the JS zone shape into the API request payload.
+function encodeZone(zone) {
+  return (zone || []).map((r) => {
+    const entry = { name: r.name, type: r.type, records: (r.records || []).map((v) => ({ content: v.content, is_disabled: !!v.isDisabled })) };
+    if (r.ttl > 0) entry.ttl = r.ttl;
+    return entry;
+  });
+}
 
 function extractItems(resp) {
   if (Array.isArray(resp)) return resp.filter(isObj);
@@ -227,6 +366,33 @@ function decodeFirewallGroup(m) {
 }
 function decodeFirewallRule(m) { return { id: mapInt(m, 'id'), action: mapStr(m, 'action'), protocol: mapStr(m, 'protocol'), port: mapStr(m, 'port'), source: mapStr(m, 'source'), sourceDetail: mapStr(m, 'source_detail'), raw: m }; }
 function decodePublicKey(m) { return { id: mapInt(m, 'id'), name: mapStr(m, 'name'), key: mapStr(m, 'key'), raw: m }; }
+function decodePostInstallScript(m) { return { id: mapInt(m, 'id'), name: mapStr(m, 'name'), content: mapStr(m, 'content'), createdAt: mapTimeStr(m, 'created_at'), updatedAt: mapTimeStr(m, 'updated_at'), raw: m }; }
+function decodeCatalogItem(m) {
+  const item = { id: mapStr(m, 'id'), name: mapStr(m, 'name'), category: mapStr(m, 'category'), prices: [], raw: m };
+  if (Array.isArray(m.prices)) item.prices = m.prices.filter(isObj).map((p) => ({
+    id: mapStr(p, 'id'), name: mapStr(p, 'name'), currency: mapStr(p, 'currency', 'currency_code'),
+    price: mapInt(p, 'price'), firstPrice: mapInt(p, 'first_period_price', 'first_price'),
+    period: mapInt(p, 'period'), periodUnit: mapStr(p, 'period_unit'), raw: p,
+  }));
+  return item;
+}
+function decodeDNSRecord(m) {
+  const r = { name: mapStr(m, 'name'), type: mapStr(m, 'type'), ttl: mapInt(m, 'ttl'), records: [], raw: m };
+  if (Array.isArray(m.records)) r.records = m.records.filter(isObj).map((v) => ({ content: mapStr(v, 'content'), isDisabled: mapBool(v, 'is_disabled') }));
+  return r;
+}
+function decodeDNSSnapshot(m) { return { id: mapInt(m, 'id'), reason: mapStr(m, 'reason'), createdAt: mapTimeStr(m, 'created_at'), raw: m }; }
+function decodeDomain(m) { return { id: mapInt(m, 'id'), domain: mapStr(m, 'domain'), type: mapStr(m, 'type'), status: mapStr(m, 'status'), createdAt: mapTimeStr(m, 'created_at'), expiresAt: mapTimeStr(m, 'expires_at'), raw: m }; }
+function decodeDomainDetail(resp) {
+  const m = unwrapObj(resp);
+  const d = {
+    domain: mapStr(m, 'domain'), status: mapStr(m, 'status'),
+    isPrivacyAllowed: mapBool(m, 'is_privacy_protection_allowed'), isPrivacyProtected: mapBool(m, 'is_privacy_protected'),
+    isLockable: mapBool(m, 'is_lockable'), isLocked: mapBool(m, 'is_locked'), ns1: '', ns2: '', raw: m,
+  };
+  if (isObj(m.name_servers)) { d.ns1 = mapStr(m.name_servers, 'ns1'); d.ns2 = mapStr(m.name_servers, 'ns2'); }
+  return d;
+}
 function decodeSubscription(m) { return { id: mapStr(m, 'id'), name: mapStr(m, 'name'), status: mapStr(m, 'status'), billingPeriod: mapInt(m, 'billing_period'), billingPeriodUnit: mapStr(m, 'billing_period_unit'), currencyCode: mapStr(m, 'currency_code'), totalPrice: mapInt(m, 'total_price'), renewalPrice: mapInt(m, 'renewal_price'), isAutoRenewed: mapBool(m, 'is_auto_renewed'), createdAt: mapTimeStr(m, 'created_at'), expiresAt: mapTimeStr(m, 'expires_at'), nextBillingAt: mapTimeStr(m, 'next_billing_at'), raw: m }; }
 function decodePaymentMethod(m) { return { id: mapInt(m, 'id'), name: mapStr(m, 'name'), identifier: mapStr(m, 'identifier'), paymentMethod: mapStr(m, 'payment_method'), isDefault: mapBool(m, 'is_default'), isExpired: mapBool(m, 'is_expired'), isSuspended: mapBool(m, 'is_suspended'), createdAt: mapTimeStr(m, 'created_at'), expiresAt: mapTimeStr(m, 'expires_at'), raw: m }; }
 function decodeDockerProject(m) { return { name: mapStr(m, 'name'), state: mapStr(m, 'state', 'status'), services: mapInt(m, 'services', 'services_count'), createdAt: mapTimeStr(m, 'created_at'), raw: m }; }
@@ -262,6 +428,16 @@ function latestSample(m, key) {
   }
   return [bestTS, bestVal];
 }
+// allSamples returns the full time-ordered [{t: ISO, v}] series for m[key].usage.
+function allSamples(m, key) {
+  const sub = isObj(m) ? m[key] : null;
+  const usage = isObj(sub) ? sub.usage : null;
+  if (!isObj(usage)) return [];
+  return Object.entries(usage)
+    .map(([kts, v]) => ({ ts: parseInt(kts, 10) || 0, v: typeof v === 'number' ? v : 0 }))
+    .sort((a, b) => a.ts - b.ts)
+    .map((p) => ({ t: new Date(p.ts * 1000).toISOString(), v: p.v }));
+}
 function decodeMetrics(m) {
   const [cpuTS, cpu] = latestSample(m, 'cpu_usage');
   const [, ram] = latestSample(m, 'ram_usage');
@@ -272,8 +448,13 @@ function decodeMetrics(m) {
   return {
     cpuPercent: cpu, ramBytes: Math.trunc(ram), diskBytes: Math.trunc(disk),
     incomingBytes: Math.trunc(inc), outgoingBytes: Math.trunc(out), uptimeMS: Math.trunc(up),
-    lastSampleAt: cpuTS > 0 ? new Date(cpuTS * 1000).toISOString() : '', raw: m,
+    lastSampleAt: cpuTS > 0 ? new Date(cpuTS * 1000).toISOString() : '',
+    // full series for sparkline rendering
+    cpuSeries: allSamples(m, 'cpu_usage'), ramSeries: allSamples(m, 'ram_usage'),
+    diskSeries: allSamples(m, 'disk_space'),
+    netInSeries: allSamples(m, 'incoming_traffic'), netOutSeries: allSamples(m, 'outgoing_traffic'),
+    raw: m,
   };
 }
 
-module.exports = { HostingerClient, HError, DEFAULT_BASE, primaryIPv4ID };
+module.exports = { HostingerClient, HError, DEFAULT_BASE, primaryIPv4ID, normalizeFirewallRule };

@@ -31,8 +31,11 @@ packages and an AppImage.
 - The snapshot endpoint is **singular** — one snapshot per VM (404 ⇒ "none").
 - Hostname and root-password use **PUT**; recreate needs an integer `template_id`.
 - PTR endpoints take the **IPv4 address ID** (from the VM's `ipv4[]`), not the raw IP.
-- Metrics needs `date_from`/`date_to` and returns time-bucketed series; the app
-  reduces each to its latest sample (CPU %, RAM/disk/traffic bytes, uptime).
+- Metrics needs `date_from`/`date_to` and returns time-bucketed series; the
+  client surfaces both the latest sample (CPU %, RAM/disk/traffic bytes, uptime)
+  and the full time-ordered series (`cpuSeries`, `ramSeries`, …) for charting.
+- Firewall rule protocol/source are normalized to the API enums before sending
+  (`tcp→TCP`, `anywhere/ipv4→any|custom`); list endpoints paginate via `?page=N`.
 - Responses are decoded **shape-tolerantly** (bare array or `{data:[…]}`;
   single objects flat or under `data`), and transient `429`/`5xx` are retried
   (3 attempts, exponential backoff) — exactly like the Go client.
@@ -44,18 +47,22 @@ packages and an AppImage.
 ```
 src/main.js             Electron main: window, menu, ops log, one generic IPC
                         dispatcher (h:call) + config/ssh/util channels
-src/hostinger-client.js HostingerClient — JS port of the Go client. ~50 methods
+src/hostinger-client.js HostingerClient — JS port of the Go client. ~85 methods
                         over developers.hostinger.com. The ONLY network seam.
+                        Full endpoint catalogue + status: docs/API.md
 src/config.js           config store; reads/writes the SAME file as the Go TUI
                         (~/.config/hostinger-tui/config.json), env overrides
 src/preload.js          contextBridge: window.api.call(method, ...args) + helpers
 renderer/               the UI (no framework): index.html + styles.css + renderer.js
 ```
 
-- ~50 client methods are reached through a **single validated dispatcher**
+- ~85 client methods are reached through a **single validated dispatcher**
   (`api.call('listVMs')`, `api.call('getVM', id)`, …); `main.js` resolves the
   method on the client (rejecting private/unknown names) and records mutations
-  in the ops log.
+  in the ops log. The client now also covers post-install scripts, the Monarx
+  malware scanner, Docker compose-create, VM purchase/setup, the billing
+  catalog, payment-method mutations, and DNS-zone + domain-portfolio
+  management — callable via `api.call(...)` even where the UI has no tab yet.
 - **contextIsolation on**, `nodeIntegration` off, strict CSP. Plain-DOM
   renderer via a tiny `h()` helper, with shared `table()`, `openForm()`
   (incl. a `checklist` field type), `confirmDialog()`, `modalPanel()`, `toast()`.
